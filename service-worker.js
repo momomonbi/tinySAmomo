@@ -2,7 +2,7 @@
 // Stale-while-revalidate: 即キャッシュから返し、バックグラウンドで更新。
 // オフラインでも動作可能 (実機接続は別途必要)。
 
-const CACHE_NAME = 'tinySA-v1';
+const CACHE_NAME = 'tinySA-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -18,8 +18,14 @@ const ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS))
-      .catch(err => console.warn('[SW] cache addAll failed:', err))
+    caches.open(CACHE_NAME).then(cache =>
+      // HTTP キャッシュをバイパスして必ず最新を取得 (古い古いファイルがプリキャッシュされる問題回避)
+      Promise.all(ASSETS.map(url =>
+        fetch(url, { cache: 'reload' })
+          .then(resp => resp.ok ? cache.put(url, resp) : null)
+          .catch(() => null)
+      ))
+    )
   );
   self.skipWaiting();
 });

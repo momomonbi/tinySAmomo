@@ -51,6 +51,7 @@
     maxDbm: $('maxDbm'),
     minDbm: $('minDbm'),
     calOffset: $('calOffset'),
+    extGain: $('extGain'),
     btnAutoScale: $('btnAutoScale'),
     btnClearWF: $('btnClearWF'),
     wfEnable: $('wfEnable'),
@@ -83,7 +84,10 @@
         maxDbm: ui.maxDbm.value,
         minDbm: ui.minDbm.value,
         calOffset: ui.calOffset.value,
+        extGain: ui.extGain.value,
         wfEnable: ui.wfEnable.checked,
+        points: ui.points.value,
+        maxHold: ui.maxHold.checked,
       };
       localStorage.setItem(DISPLAY_SETTINGS_KEY, JSON.stringify(s));
     } catch {}
@@ -97,9 +101,25 @@
       if (s.maxDbm != null && s.maxDbm !== '') ui.maxDbm.value = s.maxDbm;
       if (s.minDbm != null && s.minDbm !== '') ui.minDbm.value = s.minDbm;
       if (s.calOffset != null && s.calOffset !== '') ui.calOffset.value = s.calOffset;
+      if (s.extGain != null && s.extGain !== '') ui.extGain.value = s.extGain;
       if (typeof s.wfEnable === 'boolean') ui.wfEnable.checked = s.wfEnable;
+      if (s.points != null && s.points !== '') {
+        const optExists = Array.from(ui.points.options).some(o => o.value === String(s.points));
+        if (optExists) ui.points.value = String(s.points);
+      }
+      if (typeof s.maxHold === 'boolean') ui.maxHold.checked = s.maxHold;
       console.log('[init] 表示設定を localStorage から復元');
       return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 保存済み設定に points が存在するか判定
+  function hasSavedPoints() {
+    try {
+      const s = JSON.parse(localStorage.getItem(DISPLAY_SETTINGS_KEY) || 'null');
+      return !!(s && s.points != null && s.points !== '');
     } catch {
       return false;
     }
@@ -110,6 +130,9 @@
     waterfall = new Waterfall($('waterfallCanvas'));
     // 先に localStorage から表示設定を復元 (UIに反映)
     restoreDisplaySettings();
+    // 復元した maxHold チェック状態を spectrum 内部状態にも反映
+    // (onchange は programmatic な checked 書き換えでは発火しないため明示的に同期)
+    spectrum.peakHoldEnabled = ui.maxHold.checked;
     // 単位とラベルを設定
     spectrum.setUnit(ui.unit.value);
     waterfall.setUnit(ui.unit.value);
@@ -130,7 +153,9 @@
     ui.maxHold.onchange = () => {
       spectrum.peakHoldEnabled = ui.maxHold.checked;
       if (!ui.maxHold.checked) spectrum.clearPeakHold();
+      saveDisplaySettings();
     };
+    ui.points.addEventListener('change', saveDisplaySettings);
     ui.avgEnable.onchange = () => {
       spectrum.avgEnabled = ui.avgEnable.checked;
       if (!ui.avgEnable.checked) spectrum.clearAvg();
@@ -146,6 +171,7 @@
       el.addEventListener('change', () => { applyScale(); saveDisplaySettings(); });
     });
     ui.calOffset.addEventListener('change', saveDisplaySettings);
+    ui.extGain.addEventListener('change', saveDisplaySettings);
 
     ui.unit.onchange = () => { onUnitChange(); saveDisplaySettings(); };
 
@@ -289,27 +315,30 @@
     applyTvPreset('all');
 
     // 前回ベンチマーク結果からポイント数を復元 (帯域に近いものを選択)
-    try {
-      const cache = JSON.parse(localStorage.getItem('tinySA_bestPoints') || '{}');
-      // 現在の帯域に最も近いキーを探す
-      const curStart = parseFreq(ui.startFreq.value);
-      const curStop = parseFreq(ui.stopFreq.value);
-      const curSpan = Math.round((curStop - curStart) / 1e6);
-      const key = curSpan + 'MHz';
-      let restored = null;
-      if (cache[key] != null) {
-        restored = cache[key];
-      } else if (cache._latest != null) {
-        restored = cache._latest;
-      }
-      if (restored != null) {
-        const optExists = Array.from(ui.points.options).some(o => o.value === String(restored));
-        if (optExists) {
-          ui.points.value = String(restored);
-          console.log('[init] 前回ベンチマークから最速ポイント数', restored, 'を復元');
+    // ただしユーザーが明示的に保存した points がある場合はそれを優先 (上書きしない)
+    if (!hasSavedPoints()) {
+      try {
+        const cache = JSON.parse(localStorage.getItem('tinySA_bestPoints') || '{}');
+        // 現在の帯域に最も近いキーを探す
+        const curStart = parseFreq(ui.startFreq.value);
+        const curStop = parseFreq(ui.stopFreq.value);
+        const curSpan = Math.round((curStop - curStart) / 1e6);
+        const key = curSpan + 'MHz';
+        let restored = null;
+        if (cache[key] != null) {
+          restored = cache[key];
+        } else if (cache._latest != null) {
+          restored = cache._latest;
         }
-      }
-    } catch {}
+        if (restored != null) {
+          const optExists = Array.from(ui.points.options).some(o => o.value === String(restored));
+          if (optExists) {
+            ui.points.value = String(restored);
+            console.log('[init] 前回ベンチマークから最速ポイント数', restored, 'を復元');
+          }
+        }
+      } catch {}
+    }
 
     spectrum.draw();
     waterfall.draw();
@@ -584,10 +613,15 @@
       }
 
       if (data.length) {
-        // 校正オフセットを適用 (tinySA v1.3 firmware の生値を実dBμVへ補正)
+        // 校正オフセット + 外部利得補正をまとめて適用
+        //  - calOff: tinySA v1.3 firmware の生値を実dBμVへ補正 (加算)
+        //  - extGain: 外部 LNA / ATT 補正。正 = アンプ (差し引いて実信号源レベルへ戻す)
         const calOff = parseFloat(ui.calOffset.value);
-        if (Number.isFinite(calOff) && calOff !== 0) {
-          for (const p of data) p.dbm += calOff;
+        const extGain = parseFloat(ui.extGain.value);
+        const totalOff = (Number.isFinite(calOff) ? calOff : 0)
+                       - (Number.isFinite(extGain) ? extGain : 0);
+        if (totalOff !== 0) {
+          for (const p of data) p.dbm += totalOff;
         }
         spectrum.setRange(data[0].freq, data[data.length - 1].freq);
         spectrum.setData(data);
@@ -870,6 +904,7 @@
     const u = window.UNIT_DEFS[spectrum.unit] || { offset: 0, label: 'dBm' };
     for (const m of spectrum.markers) {
       const dbm = spectrum.valueAt(m.freq);
+      const avgDbm = spectrum.avgValueAt(m.freq);
       const li = document.createElement('li');
       if (m.id === selectedMarkerId) li.classList.add('selected');
       const dot = document.createElement('span');
@@ -878,8 +913,10 @@
       const info = document.createElement('span');
       info.className = 'marker-info';
       const lvl = (dbm !== null) ? (dbm + u.offset).toFixed(1) + ' ' + u.label : '-';
+      const avgLvl = (avgDbm !== null)
+        ? `  avg ${(avgDbm + u.offset).toFixed(1)}` : '';
       const prefix = m.label ? `M${m.id} [${m.label}]` : `M${m.id}`;
-      info.textContent = `${prefix}: ${formatFreq(m.freq)}  ${lvl}`;
+      info.textContent = `${prefix}: ${formatFreq(m.freq)}  ${lvl}${avgLvl}`;
       info.title = m.desc ? 'クリックで解説を表示' : '';
       info.onclick = () => {
         if (selectedMarkerId === m.id) {
@@ -961,11 +998,14 @@
     const dpr = src.width / src.getBoundingClientRect().width;
     octx.scale(dpr, dpr);
     const u = window.UNIT_DEFS[spectrum.unit] || { label: 'dBm' };
+    const extGainVal = parseFloat(ui.extGain.value);
+    const extGainStr = (Number.isFinite(extGainVal) && extGainVal !== 0)
+      ? ` / 外部 ${extGainVal > 0 ? '+' : ''}${extGainVal} dB` : '';
     const lines = [
       `tinySA — ${new Date().toLocaleString('ja-JP')}`,
       `${(spectrum.startFreq/1e6).toFixed(3)} 〜 ${(spectrum.stopFreq/1e6).toFixed(3)} MHz`,
       `${u.label} スケール: ${ui.minDbm.value} 〜 ${ui.maxDbm.value}`,
-      `掃引 #${sweepCount} / 校正 ${ui.calOffset.value} dB / RBW ${ui.rbw.value}`
+      `掃引 #${sweepCount} / 校正 ${ui.calOffset.value} dB${extGainStr} / RBW ${ui.rbw.value}`
     ];
     octx.font = 'bold 11px "Yu Gothic UI", Consolas, monospace';
     const padX = 8;

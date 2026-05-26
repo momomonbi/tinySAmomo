@@ -245,6 +245,22 @@ class Spectrum {
     return d[lo].dbm + t * (d[hi].dbm - d[lo].dbm);
   }
 
+  // 平均トレースを指定周波数で補間取得 (移動平均無効時 / バッファ空時は null)
+  avgValueAt(freq) {
+    const avg = this._avgTrace();
+    const d = this.data;
+    if (!avg || !d.length || avg.length !== d.length) return null;
+    if (freq <= d[0].freq) return avg[0];
+    if (freq >= d[d.length - 1].freq) return avg[avg.length - 1];
+    let lo = 0, hi = d.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (d[mid].freq <= freq) lo = mid; else hi = mid;
+    }
+    const t = (freq - d[lo].freq) / (d[hi].freq - d[lo].freq);
+    return avg[lo] + t * (avg[hi] - avg[lo]);
+  }
+
   // 現在のライブトレース (アニメーション反映後の this.data)
   _liveTrace() {
     return this.data.map(p => p.dbm);

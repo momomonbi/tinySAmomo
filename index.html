@@ -83,8 +83,8 @@
         <select id="points">
           <option value="51">51</option>
           <option value="101">101</option>
-          <option value="145" selected>145 (狭帯域で最速・推奨)</option>
-          <option value="290">290 (本体ネイティブ・広帯域向き)</option>
+          <option value="145">145 (狭帯域で最速・推奨)</option>
+          <option value="290" selected>290 (本体ネイティブ・広帯域向き)</option>
           <option value="450">450</option>
           <option value="900">900 (高解像度)</option>
         </select>
@@ -125,12 +125,16 @@
         <input type="number" id="maxDbm" value="115" step="5">
       </label>
       <label>下限 (<span class="unit-lbl">dBμV</span>)
-        <input type="number" id="minDbm" value="0" step="5">
+        <input type="number" id="minDbm" value="-6" step="5">
       </label>
       <label>校正オフセット (dB)
-        <input type="number" id="calOffset" value="-123" step="0.5">
+        <input type="number" id="calOffset" value="-120" step="0.5">
       </label>
-      <div class="hint">tinySA v1.3 firmware の生値を実dBμVに合わせる補正。表示値 123 を 0 にしたい場合は -123 を入力。</div>
+      <div class="hint">tinySA v1.3 firmware の生値を実dBμVに合わせる補正。表示値 120 を 0 にしたい場合は -120 を入力。</div>
+      <label>外部利得 (dB)
+        <input type="number" id="extGain" value="0" step="0.5" min="-20" max="20">
+      </label>
+      <div class="hint">外部の増幅器 / アッテネーターを差し込んだ時の補正。増幅器 = 正の値 (例: +20)、アッテネーター = 負の値 (例: -10)。表示値はこの分だけ減算され、実際の信号源レベルが表示される。</div>
       <div class="row">
         <button id="btnAutoScale">オート スケール</button>
         <button id="btnClearWF">瀑布をクリア</button>
