@@ -47,20 +47,34 @@ class TinySA {
     if (!this.isSupported()) {
       throw new Error('WebSerial も WebUSB もサポートされていません。Chrome / Edge を使用してください。');
     }
-    // WebSerial を優先 (デスクトップ Chrome/Edge ではこちらが基本)
-    // 利用不可なら WebUSB にフォールバック (Android Chrome ではこちら)
-    if ('serial' in navigator) {
-      try {
-        await this._connectSerial();
-      } catch (e) {
-        // WebSerial が API としてはあるがアクセスダイアログでキャンセル等
-        // → そのままエラーを上に投げる (ユーザの意図と思われるため)
-        throw e;
-      }
-    } else if ('usb' in navigator) {
-      await this._connectUSB();
+    const hasSerial = 'serial' in navigator;
+    const hasUSB = 'usb' in navigator;
+    // Android では navigator.serial が存在しても実機シリアルを列挙できないので
+    // 必ず WebUSB を優先する。デスクトップ系は WebSerial を優先 (従来通り)。
+    const isAndroid = /Android/i.test(navigator.userAgent || '');
+    if (TinySA.debug) {
+      console.log('[tinySA connect] env:', {
+        userAgent: navigator.userAgent,
+        isAndroid,
+        hasSerial,
+        hasUSB,
+      });
+    }
+    let chosen;
+    if (isAndroid && hasUSB) {
+      chosen = 'usb';
+    } else if (hasSerial) {
+      chosen = 'serial';
+    } else if (hasUSB) {
+      chosen = 'usb';
     } else {
       throw new Error('WebSerial も WebUSB もサポートされていません。');
+    }
+    if (TinySA.debug) console.log('[tinySA connect] chosen transport =', chosen);
+    if (chosen === 'serial') {
+      await this._connectSerial();
+    } else {
+      await this._connectUSB();
     }
 
     this.connected = true;

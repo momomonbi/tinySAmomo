@@ -488,8 +488,12 @@
   async function onConnect() {
     ui.btnConnect.disabled = true;
     ui.connText.textContent = '接続中...';
+    console.log('[connect] start. UA=', navigator.userAgent);
+    console.log('[connect] navigator.serial =', 'serial' in navigator,
+                ', navigator.usb =', 'usb' in navigator);
     try {
       await tinysa.connect();
+      console.log('[connect] succeeded via', tinysa.transportLabel);
       ui.connDot.classList.remove('disconnected');
       ui.connDot.classList.add('connected');
       ui.connText.textContent = '接続済 (' + tinysa.transportLabel + ')';
@@ -509,12 +513,15 @@
         await tinysa.setRbw(ui.rbw.value);
       } catch {}
     } catch (e) {
-      console.error(e);
-      ui.connText.textContent = '接続失敗';
+      console.error('[connect] FAILED:', e);
+      console.error('[connect] error.name =', e.name, ', message =', e.message);
+      if (e.stack) console.error('[connect] stack:', e.stack);
+      ui.connText.textContent = '接続失敗: ' + e.message;
       ui.connDot.classList.remove('connected');
       ui.connDot.classList.add('disconnected');
       ui.btnConnect.disabled = false;
-      alert('接続失敗:\n' + e.message + '\n\nCOM3 をブラウザのダイアログで選択してください。');
+      ui.devInfo.textContent = '接続失敗:\n' + e.message;
+      alert('接続失敗:\n' + e.message);
     }
   }
 
