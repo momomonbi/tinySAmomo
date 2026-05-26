@@ -31,7 +31,7 @@
     <div class="brand">
       <span class="logo">tinySA</span>
       <span class="subtitle">WebSerial / WebUSB スペクトラム アナライザ</span>
-      <span class="version" title="アプリ バージョン">v1.1 (2026-05-26)</span>
+      <span class="version" title="アプリ バージョン">v1.2 (2026-05-26)</span>
     </div>
     <div class="status">
       <span id="connDot" class="status-dot disconnected"></span>
@@ -49,6 +49,9 @@
       <div class="row">
         <button id="btnConnect" class="primary">tinySA 接続</button>
         <button id="btnDisconnect" disabled>切断</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button id="btnConnectUSB" title="Android などで強制的に WebUSB を使う">WebUSB で接続</button>
       </div>
       <div class="row" style="margin-top:6px">
         <button id="btnStart" class="accent" disabled>掃引開始</button>

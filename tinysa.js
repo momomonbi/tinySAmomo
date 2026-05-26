@@ -43,25 +43,48 @@ class TinySA {
     return '未接続';
   }
 
-  async connect() {
+  async connect(opts) {
+    opts = opts || {};
     if (!this.isSupported()) {
       throw new Error('WebSerial も WebUSB もサポートされていません。Chrome / Edge を使用してください。');
     }
     const hasSerial = 'serial' in navigator;
     const hasUSB = 'usb' in navigator;
-    // Android では navigator.serial が存在しても実機シリアルを列挙できないので
-    // 必ず WebUSB を優先する。デスクトップ系は WebSerial を優先 (従来通り)。
-    const isAndroid = /Android/i.test(navigator.userAgent || '');
+    // モバイル判定の優先順:
+    //  1. navigator.userAgentData.mobile (Chrome 90+、最も信頼できる。
+    //     UA 文字列の「PC サイト表示」モード切替に影響されない)
+    //  2. UA 文字列で Android / iPhone / iPad / iPod のいずれか
+    //  3. それ以外はデスクトップ扱い
+    const ua = navigator.userAgent || '';
+    const uaData = navigator.userAgentData;
+    const isMobile =
+      (uaData && typeof uaData.mobile === 'boolean' ? uaData.mobile : false) ||
+      /Android|iPhone|iPad|iPod/i.test(ua) ||
+      // 一部の Android タブレット (HEADWOLF など) は UA を "Linux x86_64" として
+      // デスクトップ詐称することがある。userAgentData が無い旧 Chrome のみここに来る。
+      false;
+
     if (TinySA.debug) {
       console.log('[tinySA connect] env:', {
-        userAgent: navigator.userAgent,
-        isAndroid,
+        userAgent: ua,
+        userAgentData: uaData ? { mobile: uaData.mobile, platform: uaData.platform } : '(none)',
+        isMobile,
         hasSerial,
         hasUSB,
+        forceTransport: opts.transport || null,
       });
     }
+
+    // 1. 明示指定 (opts.transport) があればそれを使う
+    // 2. モバイル端末で WebUSB があれば WebUSB
+    // 3. WebSerial が使えれば WebSerial (デスクトップ既定)
+    // 4. WebUSB
     let chosen;
-    if (isAndroid && hasUSB) {
+    if (opts.transport === 'serial' && hasSerial) {
+      chosen = 'serial';
+    } else if (opts.transport === 'usb' && hasUSB) {
+      chosen = 'usb';
+    } else if (isMobile && hasUSB) {
       chosen = 'usb';
     } else if (hasSerial) {
       chosen = 'serial';
@@ -71,10 +94,25 @@ class TinySA {
       throw new Error('WebSerial も WebUSB もサポートされていません。');
     }
     if (TinySA.debug) console.log('[tinySA connect] chosen transport =', chosen);
-    if (chosen === 'serial') {
-      await this._connectSerial();
-    } else {
-      await this._connectUSB();
+
+    try {
+      if (chosen === 'serial') {
+        await this._connectSerial();
+      } else {
+        await this._connectUSB();
+      }
+    } catch (e) {
+      // WebSerial で NotFoundError や SecurityError 等が出た場合、
+      // 自動的に WebUSB へフォールバックする (明示指定でなければ)
+      const isCancelLike = e && (e.name === 'NotFoundError' || e.name === 'SecurityError');
+      if (chosen === 'serial' && hasUSB && !opts.transport && isCancelLike) {
+        if (TinySA.debug) {
+          console.warn('[tinySA connect] WebSerial 失敗 (' + e.name + '): WebUSB に自動フォールバック');
+        }
+        await this._connectUSB();
+      } else {
+        throw e;
+      }
     }
 
     this.connected = true;

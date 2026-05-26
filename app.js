@@ -20,6 +20,7 @@
     sweepCount: $('sweepCount'),
 
     btnConnect: $('btnConnect'),
+    btnConnectUSB: $('btnConnectUSB'),
     btnDisconnect: $('btnDisconnect'),
     btnRecover: $('btnRecover'),
     btnLowRange: $('btnLowRange'),
@@ -143,6 +144,7 @@
     applyRange();
 
     ui.btnConnect.onclick = onConnect;
+    ui.btnConnectUSB.onclick = () => onConnect({ transport: 'usb' });
     ui.btnDisconnect.onclick = onDisconnect;
     ui.btnRecover.onclick = onRecover;
     ui.btnLowRange.onclick = () => applyPreset('low');
@@ -485,14 +487,17 @@
     }
   }
 
-  async function onConnect() {
+  async function onConnect(opts) {
+    opts = opts || {};
     ui.btnConnect.disabled = true;
-    ui.connText.textContent = '接続中...';
+    ui.btnConnectUSB.disabled = true;
+    ui.connText.textContent = '接続中...' + (opts.transport ? ' (' + opts.transport + ' 強制)' : '');
     console.log('[connect] start. UA=', navigator.userAgent);
     console.log('[connect] navigator.serial =', 'serial' in navigator,
                 ', navigator.usb =', 'usb' in navigator);
+    console.log('[connect] opts =', opts);
     try {
-      await tinysa.connect();
+      await tinysa.connect(opts);
       console.log('[connect] succeeded via', tinysa.transportLabel);
       ui.connDot.classList.remove('disconnected');
       ui.connDot.classList.add('connected');
@@ -520,6 +525,7 @@
       ui.connDot.classList.remove('connected');
       ui.connDot.classList.add('disconnected');
       ui.btnConnect.disabled = false;
+      ui.btnConnectUSB.disabled = false;
       ui.devInfo.textContent = '接続失敗:\n' + e.message;
       alert('接続失敗:\n' + e.message);
     }
