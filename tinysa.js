@@ -255,16 +255,42 @@ class TinySA {
       throw new Error('USB: Bulk エンドポイントが見つかりません');
     }
 
-    // Data インタフェースを claim
+    // Data インタフェースを claim (リトライ付き)
+    // Android では他のアプリ (USB Device Info 等) や OS ドライバが
+    // 一時的にインタフェースを掴んでいることがあるので、ちょっと待って再試行する。
+    const tryClaim = async (ifaceNum, attempts) => {
+      let lastErr;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          // 念のため release してから claim (既に他で握っていれば effect なし)
+          try { await device.releaseInterface(ifaceNum); } catch {}
+          await device.claimInterface(ifaceNum);
+          return;
+        } catch (e) {
+          lastErr = e;
+          if (TinySA.debug) console.warn(`[USB] claimInterface(${ifaceNum}) attempt ${i+1} failed: ${e.message}`);
+          // 100ms × (i+1) ms 待ち
+          await new Promise(r => setTimeout(r, 100 * (i + 1)));
+        }
+      }
+      throw lastErr;
+    };
     try {
-      await device.claimInterface(dataIface.ifaceNum);
+      await tryClaim(dataIface.ifaceNum, 5);
     } catch (e) {
-      await device.close();
-      throw new Error('USB: インタフェースを取得できませんでした。OS の CDC ドライバが占有している可能性: ' + e.message);
+      await device.close().catch(() => {});
+      throw new Error(
+        'USB: インタフェース ' + dataIface.ifaceNum + ' を取得できませんでした。\n' +
+        '原因として最も可能性が高いのは、別のアプリが USB を占有していることです:\n' +
+        '  1. USB Device Info などの USB 情報アプリを「強制停止」して再試行\n' +
+        '  2. USB Serial Terminal 系アプリがインストールされていれば一旦アンインストール\n' +
+        '  3. tinySA を抜いて 5 秒待ち、再接続してから「WebUSB で接続」\n' +
+        '元エラー: ' + e.message
+      );
     }
     // Control インタフェースもあれば claim (一部 OS で必要)
     if (controlIfaceNum >= 0 && controlIfaceNum !== dataIface.ifaceNum) {
-      try { await device.claimInterface(controlIfaceNum); } catch {}
+      try { await tryClaim(controlIfaceNum, 2); } catch {}
     }
 
     // CDC SET_LINE_CODING: 115200 8N1
