@@ -12,15 +12,6 @@
 <link rel="icon" type="image/svg+xml" href="icon.svg">
 <link rel="apple-touch-icon" href="icon.svg">
 <link rel="stylesheet" href="style.css">
-<!-- 診断用インブラウザコンソール (URL に ?debug=1 で有効化) -->
-<script>
-  if (new URLSearchParams(location.search).has('debug')) {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/eruda';
-    s.onload = () => { try { eruda.init(); console.log('[eruda] ready'); } catch(e) {} };
-    document.head.appendChild(s);
-  }
-</script>
 </head>
 <body>
 <div id="app">
@@ -31,7 +22,7 @@
     <div class="brand">
       <span class="logo">tinySA</span>
       <span class="subtitle">WebSerial / WebUSB スペクトラム アナライザ</span>
-      <span class="version" title="アプリ バージョン">v1.3 (2026-05-26)</span>
+      <span class="version" title="アプリ バージョン">v1.4 (2026-05-26)</span>
     </div>
     <div class="status">
       <span id="connDot" class="status-dot disconnected"></span>
