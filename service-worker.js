@@ -2,7 +2,7 @@
 // Stale-while-revalidate: 即キャッシュから返し、バックグラウンドで更新。
 // オフラインでも動作可能 (実機接続は別途必要)。
 
-const CACHE_NAME = 'tinySA-v4';
+const CACHE_NAME = 'tinySA-v5';
 const ASSETS = [
   './',
   './index.html',

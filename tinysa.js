@@ -116,14 +116,55 @@ class TinySA {
     // 既に承認済みデバイスがあれば優先利用 (再接続)
     let device = null;
     const granted = await navigator.usb.getDevices();
-    const isTinySA = (d) => d.vendorId === 0x0483 && d.productId === 0x5740;
-    const known = granted.find(isTinySA);
+    if (TinySA.debug) {
+      console.log('[USB] navigator.usb.getDevices() ->',
+        granted.map(d => ({
+          vid: '0x' + d.vendorId.toString(16).padStart(4, '0'),
+          pid: '0x' + d.productId.toString(16).padStart(4, '0'),
+          name: d.productName || '(no name)',
+          mfg: d.manufacturerName || '(no mfg)',
+        }))
+      );
+    }
+    const isTinySA = (d) =>
+      // STM32 default CDC (tinySA / NanoVNA)
+      (d.vendorId === 0x0483 && d.productId === 0x5740) ||
+      // STMicro any product (念のため候補)
+      (d.vendorId === 0x0483) ||
+      // CDC クラス全般 (商品名 tinySA を含むものを優先する判定は後で)
+      false;
+    const knownTiny = granted.find(d => d.vendorId === 0x0483 && d.productId === 0x5740);
+    const known = knownTiny || granted.find(isTinySA);
     if (known) {
       device = known;
+      if (TinySA.debug) console.log('[USB] 承認済みデバイスを再利用:', known.productName);
     } else {
-      device = await navigator.usb.requestDevice({
-        filters: [{ vendorId: 0x0483, productId: 0x5740 }],
-      });
+      // 段階的にフィルタを広げて requestDevice
+      //  1) tinySA 想定 (VID:PID = 0x0483:0x5740)
+      //  2) STMicro 全般 (VID = 0x0483)
+      //  3) USB CDC 全般 (classCode 0x02 = Communications)
+      // → リストに何も出ないユーザでもいずれかのフィルタで拾える
+      try {
+        device = await navigator.usb.requestDevice({
+          filters: [
+            { vendorId: 0x0483, productId: 0x5740 },
+            { vendorId: 0x0483 },
+            { classCode: 0x02 },  // CDC Communications class
+            { classCode: 0x0A },  // CDC Data class
+          ],
+        });
+      } catch (e) {
+        // ユーザがダイアログをキャンセル / 該当なし
+        throw new Error(
+          'USB デバイスが選択されませんでした。\n' +
+          '原因の可能性:\n' +
+          '  1. tinySA の電源が入っていない\n' +
+          '  2. ケーブルがデータ非対応 (充電専用)\n' +
+          '  3. Android が tinySA を USB ホストとして認識していない\n' +
+          '  4. 別アプリ (USB Device Info 等) が USB を占有中\n' +
+          '元エラー: ' + e.message
+        );
+      }
     }
     await device.open();
     if (device.configuration === null) {
