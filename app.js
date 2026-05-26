@@ -193,8 +193,44 @@
       spectrum.draw();
     };
 
-    // クリック (マウス用): マーカー追加
+    // カーソル位置の周波数ツールチップ (マウスホバー時)
+    const cursorFreq = $('cursorFreq');
     const canvas = $('spectrumCanvas');
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      // プロット領域外なら非表示
+      if (x < spectrum.padL || x > rect.width - spectrum.padR) {
+        cursorFreq.classList.remove('show');
+        return;
+      }
+      const freq = spectrum.xToFreq(x, rect.width);
+      const dbm = spectrum.valueAt(freq);
+      const u = window.UNIT_DEFS[spectrum.unit] || { offset: 0, label: 'dBm' };
+      const fStr = (freq / 1e6).toFixed(3) + ' MHz';
+      let html = fStr;
+      if (dbm !== null && Number.isFinite(dbm)) {
+        const lvl = (dbm + u.offset).toFixed(1) + ' ' + u.label;
+        html += `<span class="lvl">${lvl}</span>`;
+      }
+      cursorFreq.innerHTML = html;
+      cursorFreq.classList.add('show');
+      // カーソル右上に配置、画面端で反転
+      const ofsX = 14, ofsY = 22;
+      let px = e.clientX + ofsX;
+      let py = e.clientY - ofsY;
+      const tw = cursorFreq.offsetWidth;
+      const th = cursorFreq.offsetHeight;
+      if (px + tw > window.innerWidth - 4) px = e.clientX - tw - ofsX;
+      if (py < 4) py = e.clientY + ofsY;
+      cursorFreq.style.left = px + 'px';
+      cursorFreq.style.top = py + 'px';
+    });
+    canvas.addEventListener('mouseleave', () => {
+      cursorFreq.classList.remove('show');
+    });
+
+    // クリック (マウス用): マーカー追加
     canvas.addEventListener('click', (e) => {
       // touch由来のクリックは抑止 (touchend で別途処理する)
       if (e.detail === 0) return;
