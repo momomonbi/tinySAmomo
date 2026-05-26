@@ -329,3 +329,87 @@ main.wf-off .waterfall-wrap {
   margin-bottom: 2px;
 }
 
+/* ハンバーガーメニューボタン (デフォルト非表示、モバイルで表示) */
+#menuToggle {
+  display: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-right: 8px;
+  position: relative;
+  cursor: pointer;
+}
+#menuToggle span {
+  display: block;
+  position: absolute;
+  left: 7px; right: 7px;
+  height: 2px;
+  background: var(--text);
+  transition: transform 0.2s, opacity 0.2s;
+}
+#menuToggle span:nth-child(1) { top: 10px; }
+#menuToggle span:nth-child(2) { top: 17px; }
+#menuToggle span:nth-child(3) { top: 24px; }
+#menuToggle.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+#menuToggle.open span:nth-child(2) { opacity: 0; }
+#menuToggle.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+/* ドロワー背景 (モバイルでサイドバーが開いてる時のオーバーレイ) */
+#drawerBackdrop {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 50;
+}
+#drawerBackdrop.show { display: block; }
+
+/* レスポンシブ: 900px 以下でサイドバーをドロワー化 */
+@media (max-width: 900px) {
+  #app {
+    grid-template-columns: 1fr;
+    grid-template-areas: "header" "main";
+  }
+  #menuToggle { display: block; }
+  #controls {
+    grid-area: unset;
+    position: fixed;
+    top: 48px;
+    left: 0;
+    bottom: 0;
+    width: 320px;
+    max-width: 85vw;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease-out;
+    z-index: 60;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+  }
+  #controls.open { transform: translateX(0); }
+  /* ヘッダーのサブタイトルは省略 */
+  .subtitle { display: none; }
+  /* ステータス表示を縮小 */
+  .status { font-size: 11px; gap: 6px; }
+  .status .divider { display: none; }
+}
+
+/* タッチデバイス向け: ボタン/タップ領域を大きく */
+@media (pointer: coarse) {
+  button {
+    min-height: 36px;
+    padding: 8px 12px;
+  }
+  .group input[type="text"],
+  .group input[type="number"],
+  .group select {
+    padding: 8px 9px;
+    font-size: 14px;
+  }
+  .marker-list li { padding: 6px 4px; }
+  .marker-del { padding: 0 8px; font-size: 18px; }
+  /* スペクトラム上のタッチ操作中はスクロール抑止 */
+  .spectrum-wrap canvas { touch-action: none; }
+}
+

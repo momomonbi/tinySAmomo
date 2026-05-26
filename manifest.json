@@ -1,0 +1,21 @@
+{
+  "name": "tinySA — スペクトラム アナライザ",
+  "short_name": "tinySA",
+  "description": "WebSerial 経由で tinySA を駆動するスペクトラム アナライザ。三沢市テレビ受信・電波障害監視プリセット内蔵。",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0a0e14",
+  "theme_color": "#0a0e14",
+  "categories": ["utilities", "productivity"],
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

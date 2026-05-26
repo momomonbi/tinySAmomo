@@ -193,9 +193,12 @@
       spectrum.draw();
     };
 
-    // Click on spectrum to add marker
-    $('spectrumCanvas').addEventListener('click', (e) => {
-      const rect = e.currentTarget.getBoundingClientRect();
+    // クリック (マウス用): マーカー追加
+    const canvas = $('spectrumCanvas');
+    canvas.addEventListener('click', (e) => {
+      // touch由来のクリックは抑止 (touchend で別途処理する)
+      if (e.detail === 0) return;
+      const rect = canvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const freq = spectrum.xToFreq(x, rect.width);
       if (freq >= spectrum.startFreq && freq <= spectrum.stopFreq) {
@@ -203,6 +206,30 @@
         updateMarkerList();
         spectrum.draw();
       }
+    });
+
+    // タッチジェスチャ: ピンチ→ズーム、ロングタップ→マーカー追加
+    setupTouchGestures(canvas);
+
+    // ハンバーガー & ドロワー (モバイル)
+    const menuToggle = $('menuToggle');
+    const drawer = $('controls');
+    const backdrop = $('drawerBackdrop');
+    const closeDrawer = () => {
+      drawer.classList.remove('open');
+      menuToggle.classList.remove('open');
+      backdrop.classList.remove('show');
+    };
+    menuToggle.addEventListener('click', () => {
+      const open = !drawer.classList.contains('open');
+      drawer.classList.toggle('open', open);
+      menuToggle.classList.toggle('open', open);
+      backdrop.classList.toggle('show', open);
+    });
+    backdrop.addEventListener('click', closeDrawer);
+    // メディアクエリ復帰時にドロワーを自動で閉じる
+    window.matchMedia('(min-width: 901px)').addEventListener('change', (ev) => {
+      if (ev.matches) closeDrawer();
     });
 
     // Resize observer
@@ -565,6 +592,129 @@
     return new Promise(r => setTimeout(r, ms));
   }
 
+  // タッチジェスチャ処理
+  // - 1本指 + 静止 500ms → ロングタップでマーカー追加 (バイブ)
+  // - 1本指 + ドラッグ → 周波数範囲を左右パン
+  // - 2本指 + ピンチ → ピンチ位置を中心に周波数ズーム
+  function setupTouchGestures(canvas) {
+    let mode = null;            // 'long' | 'pan' | 'pinch'
+    let longTimer = null;
+    let lpStart = null;         // {x, y}
+    let panStart = null;         // {x, startFreq, stopFreq}
+    let pinchStart = null;       // {dist, centerX, startFreq, stopFreq}
+
+    const getRect = () => canvas.getBoundingClientRect();
+
+    canvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        const t = e.touches[0];
+        const rect = getRect();
+        lpStart = { x: t.clientX - rect.left, y: t.clientY - rect.top };
+        panStart = { x: lpStart.x, startFreq: spectrum.startFreq, stopFreq: spectrum.stopFreq };
+        mode = 'long';  // 暫定、move で 'pan' に昇格
+        clearTimeout(longTimer);
+        longTimer = setTimeout(() => {
+          if (mode !== 'long' || !lpStart) return;
+          // ロングタップ → マーカー追加
+          const freq = spectrum.xToFreq(lpStart.x, rect.width);
+          if (freq >= spectrum.startFreq && freq <= spectrum.stopFreq) {
+            spectrum.addMarker(freq);
+            updateMarkerList();
+            spectrum.draw();
+            if (navigator.vibrate) navigator.vibrate(40);
+          }
+          mode = null;
+        }, 500);
+        e.preventDefault();
+      } else if (e.touches.length === 2) {
+        clearTimeout(longTimer);
+        const t1 = e.touches[0], t2 = e.touches[1];
+        const rect = getRect();
+        const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        pinchStart = {
+          dist,
+          centerX: (t1.clientX + t2.clientX) / 2 - rect.left,
+          startFreq: spectrum.startFreq,
+          stopFreq: spectrum.stopFreq,
+          rectW: rect.width
+        };
+        mode = 'pinch';
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (mode === 'pinch' && e.touches.length === 2 && pinchStart) {
+        const t1 = e.touches[0], t2 = e.touches[1];
+        const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        const scale = Math.max(0.1, Math.min(10, pinchStart.dist / dist));
+        const focusT = pinchStart.centerX / pinchStart.rectW;  // 0〜1
+        const focusFreq = pinchStart.startFreq + focusT * (pinchStart.stopFreq - pinchStart.startFreq);
+        const newSpan = (pinchStart.stopFreq - pinchStart.startFreq) * scale;
+        let newStart = focusFreq - focusT * newSpan;
+        let newStop = newStart + newSpan;
+        // 帯域チェック (50kHz 以上、~3GHz 以下)
+        if (newSpan < 50e3) return;
+        if (newStart < 0) { newStart = 0; newStop = newStart + newSpan; }
+        if (newStop > 3e9) { newStop = 3e9; newStart = newStop - newSpan; }
+        ui.startFreq.value = hzToMHzStr(newStart);
+        ui.stopFreq.value = hzToMHzStr(newStop);
+        applyRange();
+        e.preventDefault();
+      } else if (mode === 'long' && e.touches.length === 1 && lpStart) {
+        const t = e.touches[0];
+        const rect = getRect();
+        const x = t.clientX - rect.left;
+        const y = t.clientY - rect.top;
+        const dx = x - lpStart.x;
+        const dy = y - lpStart.y;
+        if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+          // ロング判定キャンセル → パンモードへ
+          clearTimeout(longTimer);
+          mode = 'pan';
+        }
+      }
+      if (mode === 'pan' && e.touches.length === 1 && panStart) {
+        const t = e.touches[0];
+        const rect = getRect();
+        const x = t.clientX - rect.left;
+        const dx = x - panStart.x;
+        const span = panStart.stopFreq - panStart.startFreq;
+        const freqShift = -dx / rect.width * span;
+        let newStart = panStart.startFreq + freqShift;
+        let newStop = panStart.stopFreq + freqShift;
+        if (newStart < 0) { newStart = 0; newStop = newStart + span; }
+        if (newStop > 3e9) { newStop = 3e9; newStart = newStop - span; }
+        ui.startFreq.value = hzToMHzStr(newStart);
+        ui.stopFreq.value = hzToMHzStr(newStop);
+        applyRange();
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    canvas.addEventListener('touchend', (e) => {
+      clearTimeout(longTimer);
+      if (e.touches.length === 0) {
+        mode = null;
+        lpStart = null;
+        panStart = null;
+        pinchStart = null;
+      } else if (e.touches.length === 1 && mode === 'pinch') {
+        // 1本に減ったら pan に切替
+        mode = 'pan';
+        const t = e.touches[0];
+        const rect = getRect();
+        panStart = { x: t.clientX - rect.left, startFreq: spectrum.startFreq, stopFreq: spectrum.stopFreq };
+      }
+    });
+
+    canvas.addEventListener('touchcancel', () => {
+      clearTimeout(longTimer);
+      mode = null;
+      lpStart = panStart = pinchStart = null;
+    });
+  }
+
   function applyWaterfallToggle() {
     const main = document.querySelector('main');
     const wf = document.querySelector('.waterfall-wrap');
@@ -788,7 +938,8 @@
     const tw = Math.max(...lines.map(l => octx.measureText(l).width)) + padX * 2;
     const th = lines.length * lineH + padY * 2;
     const x0 = (src.getBoundingClientRect().width) - tw - 4;
-    const y0 = 4;
+    // バンド情報(最上段)を避けて配置: padT(18) + 4 + 3行 × rowHeight(32) + 余白
+    const y0 = 130;
     octx.fillStyle = 'rgba(0,0,0,0.78)';
     octx.fillRect(x0, y0, tw, th);
     octx.strokeStyle = '#4ade80';

@@ -2,13 +2,23 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0e14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
 <title>tinySA — スペクトラム アナライザ</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
   <header>
+    <button id="menuToggle" aria-label="メニューを開閉" title="メニューを開閉">
+      <span></span><span></span><span></span>
+    </button>
     <div class="brand">
       <span class="logo">tinySA</span>
       <span class="subtitle">WebSerial スペクトラム アナライザ</span>
@@ -174,10 +184,21 @@
   </main>
 </div>
 
+<div id="drawerBackdrop"></div>
 <script src="tvchannels.js"></script>
 <script src="tinysa.js"></script>
 <script src="spectrum.js"></script>
 <script src="waterfall.js"></script>
 <script src="app.js"></script>
+<script>
+  // Service Worker 登録 (PWA化)
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./service-worker.js')
+        .then(reg => console.log('[PWA] SW registered, scope:', reg.scope))
+        .catch(err => console.warn('[PWA] SW registration failed:', err));
+    });
+  }
+</script>
 </body>
 </html>
