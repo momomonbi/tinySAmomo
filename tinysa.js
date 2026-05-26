@@ -13,29 +13,88 @@ class TinySA {
     this.buffer = '';
     // コマンド送信の直列化用ミューテックス
     this._cmdQueue = Promise.resolve();
+
+    // 接続方式: 'serial' (WebSerial、デスクトップ Chrome) または 'usb' (WebUSB、Android Chrome)
+    this.transport = null;
+
+    // WebUSB 用の状態
+    this._usbDevice = null;
+    this._usbInterfaceNum = -1;
+    this._usbEpIn = -1;
+    this._usbEpOut = -1;
+    this._usbEpInPacketSize = 64;
+    this._usbReadBuffer = '';
+    this._usbReadWaiters = [];
+    this._usbReadLoopActive = false;
+    this._usbReadLoopPromise = null;
+    this._textEncoder = new TextEncoder();
+    this._textDecoder = new TextDecoder('utf-8', { fatal: false });
   }
 
+  // どちらかの API が使えれば true
   isSupported() {
-    return 'serial' in navigator;
+    return ('serial' in navigator) || ('usb' in navigator);
+  }
+
+  // 接続方式の文字列表記 (UI 表示用)
+  get transportLabel() {
+    if (this.transport === 'serial') return 'WebSerial';
+    if (this.transport === 'usb') return 'WebUSB';
+    return '未接続';
   }
 
   async connect() {
     if (!this.isSupported()) {
-      throw new Error('WebSerial がサポートされていません。Chrome / Edge を使用してください。');
+      throw new Error('WebSerial も WebUSB もサポートされていません。Chrome / Edge を使用してください。');
+    }
+    // WebSerial を優先 (デスクトップ Chrome/Edge ではこちらが基本)
+    // 利用不可なら WebUSB にフォールバック (Android Chrome ではこちら)
+    if ('serial' in navigator) {
+      try {
+        await this._connectSerial();
+      } catch (e) {
+        // WebSerial が API としてはあるがアクセスダイアログでキャンセル等
+        // → そのままエラーを上に投げる (ユーザの意図と思われるため)
+        throw e;
+      }
+    } else if ('usb' in navigator) {
+      await this._connectUSB();
+    } else {
+      throw new Error('WebSerial も WebUSB もサポートされていません。');
     }
 
-    // フィルタを使わず、PCに接続されている任意のシリアル/USB-CDC を選択可能にする。
-    // (tinySA 本体が PC や他端末に接続されていれば、ブラウザのダイアログで選択する。)
+    this.connected = true;
+    this.buffer = '';
+    this._cmdQueue = Promise.resolve();
+
+    // 接続直後の初期化シーケンス (両トランスポート共通):
+    // 1. 本体が自動スイープしてデータをストリーミングしている可能性があるため、
+    //    まず生の \r\r を投入して buffer をプロンプトに戻す。
+    // 2. 続けて pause を送って本体側スイープを停止させる。これにより以降の
+    //    scan コマンドはこちら主導で正確に応答が得られる。
+    // 3. 残った出力を捨てる。
+    try {
+      await this._writeText('\r\r');
+      await this._drainAny(2000);
+      this.buffer = '';
+      if (TinySA.debug) console.log('[tinySA init] sending pause to stop auto sweep');
+      await this._writeText('pause\r');
+      await this._drainAny(1500);
+      this.buffer = '';
+      if (TinySA.debug) console.log('[tinySA init] init complete (transport=' + this.transport + ')');
+    } catch (e) {
+      console.warn('[tinySA init] flush warning:', e);
+    }
+  }
+
+  async _connectSerial() {
     let port = null;
     const granted = await navigator.serial.getPorts();
     if (granted.length > 0) {
-      // 前回承認済みポートがあれば先頭を使う (再接続)
       port = granted[0];
     } else {
-      // 初回接続時は全シリアルポートを表示
       port = await navigator.serial.requestPort({});
     }
-
     await port.open({
       baudRate: 115200,
       dataBits: 8,
@@ -43,40 +102,187 @@ class TinySA {
       parity: 'none',
       flowControl: 'none',
     });
-
     this.port = port;
-
     const decoder = new TextDecoderStream();
     this.readableClosed = port.readable.pipeTo(decoder.writable).catch(() => {});
     this.reader = decoder.readable.getReader();
-
     const encoder = new TextEncoderStream();
     this.writableClosed = encoder.readable.pipeTo(port.writable).catch(() => {});
     this.writer = encoder.writable.getWriter();
+    this.transport = 'serial';
+  }
 
-    this.connected = true;
-    this.buffer = '';
-    this._cmdQueue = Promise.resolve();
-
-    // 接続直後の初期化シーケンス:
-    // 1. 本体が自動スイープしてデータをストリーミングしている可能性があるため、
-    //    まず生の \r\r を投入して buffer をプロンプトに戻す。
-    // 2. 続けて pause を送って本体側スイープを停止させる。これにより以降の
-    //    scan コマンドはこちら主導で正確に応答が得られる。
-    // 3. 残った出力を捨てる。
-    try {
-      await this.writer.write('\r\r');
-      // 最大 2 秒、何か出力があれば吸収する
-      await this._drainAny(2000);
-      this.buffer = '';
-      if (TinySA.debug) console.log('[tinySA init] sending pause to stop auto sweep');
-      await this.writer.write('pause\r');
-      await this._drainAny(1500);
-      this.buffer = '';
-      if (TinySA.debug) console.log('[tinySA init] init complete');
-    } catch (e) {
-      console.warn('[tinySA init] flush warning:', e);
+  async _connectUSB() {
+    // 既に承認済みデバイスがあれば優先利用 (再接続)
+    let device = null;
+    const granted = await navigator.usb.getDevices();
+    const isTinySA = (d) => d.vendorId === 0x0483 && d.productId === 0x5740;
+    const known = granted.find(isTinySA);
+    if (known) {
+      device = known;
+    } else {
+      device = await navigator.usb.requestDevice({
+        filters: [{ vendorId: 0x0483, productId: 0x5740 }],
+      });
     }
+    await device.open();
+    if (device.configuration === null) {
+      await device.selectConfiguration(1);
+    }
+
+    // CDC: Data Interface (class 0x0A) を見つけ、Bulk IN/OUT エンドポイントを取得
+    let dataIface = null;
+    let controlIfaceNum = -1;
+    for (const iface of device.configuration.interfaces) {
+      for (const alt of iface.alternates) {
+        if (alt.interfaceClass === 0x0A && dataIface == null) {
+          dataIface = { ifaceNum: iface.interfaceNumber, alt };
+        }
+        if (alt.interfaceClass === 0x02 && controlIfaceNum < 0) {
+          controlIfaceNum = iface.interfaceNumber;
+        }
+      }
+    }
+    if (!dataIface) {
+      await device.close();
+      throw new Error('USB: CDC Data インタフェースが見つかりません');
+    }
+    let epIn = -1, epOut = -1, epInSize = 64;
+    for (const ep of dataIface.alt.endpoints) {
+      if (ep.type === 'bulk' && ep.direction === 'in') {
+        epIn = ep.endpointNumber;
+        epInSize = ep.packetSize || 64;
+      }
+      if (ep.type === 'bulk' && ep.direction === 'out') {
+        epOut = ep.endpointNumber;
+      }
+    }
+    if (epIn < 0 || epOut < 0) {
+      await device.close();
+      throw new Error('USB: Bulk エンドポイントが見つかりません');
+    }
+
+    // Data インタフェースを claim
+    try {
+      await device.claimInterface(dataIface.ifaceNum);
+    } catch (e) {
+      await device.close();
+      throw new Error('USB: インタフェースを取得できませんでした。OS の CDC ドライバが占有している可能性: ' + e.message);
+    }
+    // Control インタフェースもあれば claim (一部 OS で必要)
+    if (controlIfaceNum >= 0 && controlIfaceNum !== dataIface.ifaceNum) {
+      try { await device.claimInterface(controlIfaceNum); } catch {}
+    }
+
+    // CDC SET_LINE_CODING: 115200 8N1
+    //   dwDTERate(4 LE) | bCharFormat(1=stop) | bParityType(1=parity) | bDataBits(1=data)
+    //   115200 = 0x0001C200 → 00 C2 01 00 / stop=0 / parity=0 / data=8
+    const lineCoding = new Uint8Array([0x00, 0xC2, 0x01, 0x00, 0x00, 0x00, 0x08]);
+    try {
+      await device.controlTransferOut({
+        requestType: 'class',
+        recipient: 'interface',
+        request: 0x20, // SET_LINE_CODING
+        value: 0,
+        index: controlIfaceNum >= 0 ? controlIfaceNum : dataIface.ifaceNum,
+      }, lineCoding);
+    } catch (e) {
+      console.warn('[USB] SET_LINE_CODING failed (継続):', e.message);
+    }
+    // CDC SET_CONTROL_LINE_STATE: DTR=1, RTS=1
+    try {
+      await device.controlTransferOut({
+        requestType: 'class',
+        recipient: 'interface',
+        request: 0x22, // SET_CONTROL_LINE_STATE
+        value: 0x03,   // DTR | RTS
+        index: controlIfaceNum >= 0 ? controlIfaceNum : dataIface.ifaceNum,
+      });
+    } catch (e) {
+      console.warn('[USB] SET_CONTROL_LINE_STATE failed (継続):', e.message);
+    }
+
+    this._usbDevice = device;
+    this.port = device;  // 共通フィールドにも入れて互換性のため
+    this._usbInterfaceNum = dataIface.ifaceNum;
+    this._usbEpIn = epIn;
+    this._usbEpOut = epOut;
+    this._usbEpInPacketSize = epInSize;
+    this._usbReadBuffer = '';
+    this._usbReadWaiters = [];
+    this.transport = 'usb';
+    this._startUSBReadLoop();
+  }
+
+  // WebUSB のバックグラウンド読み込みループ
+  // transferIn は基本的に「データが来るまで」もしくは「endpoint stall まで」ブロックする。
+  // ここで連続的に読み続け、_usbReadBuffer に蓄積する。読み手 (_readRaw) はバッファから取り出す。
+  _startUSBReadLoop() {
+    this._usbReadLoopActive = true;
+    this._usbReadLoopPromise = (async () => {
+      while (this._usbReadLoopActive) {
+        let result;
+        try {
+          result = await this._usbDevice.transferIn(this._usbEpIn, this._usbEpInPacketSize);
+        } catch (e) {
+          // 切断時は transferIn が reject する → ループ抜け
+          if (this._usbReadLoopActive && TinySA.debug) {
+            console.warn('[USB read loop] transferIn error:', e.message);
+          }
+          break;
+        }
+        if (result.status === 'ok' && result.data && result.data.byteLength > 0) {
+          const bytes = new Uint8Array(
+            result.data.buffer,
+            result.data.byteOffset,
+            result.data.byteLength
+          );
+          const text = this._textDecoder.decode(bytes, { stream: true });
+          this._usbReadBuffer += text;
+          // 待機中の読み手を全員起こす
+          const waiters = this._usbReadWaiters;
+          this._usbReadWaiters = [];
+          for (const w of waiters) w();
+        } else if (result.status === 'stall') {
+          try { await this._usbDevice.clearHalt('in', this._usbEpIn); } catch {}
+        }
+      }
+      // 読み手にループ終了を通知
+      const waiters = this._usbReadWaiters;
+      this._usbReadWaiters = [];
+      for (const w of waiters) w();
+    })();
+  }
+
+  // 共通 I/O ラッパー: 1 チャンクのテキストを返す。
+  // 返り値: { value: string|null, done: boolean }
+  // 利用側で Promise.race により外部タイムアウトが可能。
+  async _readRaw() {
+    if (this.transport === 'serial') {
+      return await this.reader.read();
+    }
+    // WebUSB
+    while (this.connected || this._usbReadBuffer.length > 0) {
+      if (this._usbReadBuffer.length > 0) {
+        const text = this._usbReadBuffer;
+        this._usbReadBuffer = '';
+        return { value: text, done: false };
+      }
+      // 新着待ち
+      await new Promise((resolve) => {
+        this._usbReadWaiters.push(resolve);
+      });
+    }
+    return { value: null, done: true };
+  }
+
+  async _writeText(text) {
+    if (this.transport === 'serial') {
+      return await this.writer.write(text);
+    }
+    // WebUSB
+    const bytes = this._textEncoder.encode(text);
+    await this._usbDevice.transferOut(this._usbEpOut, bytes);
   }
 
   // タイムアウトまで読み続けて buffer に積む (prompt を待たない版)
@@ -87,7 +293,7 @@ class TinySA {
       if (remaining <= 0) break;
       let res;
       try {
-        const readPromise = this.reader.read();
+        const readPromise = this._readRaw();
         const timer = new Promise((resolve) =>
           setTimeout(() => resolve({ done: false, value: null, _timeout: true }), remaining)
         );
@@ -107,33 +313,59 @@ class TinySA {
     // 切断前に本体スイープを再開させる (接続時に pause しているため)
     if (this.connected) {
       try {
-        // ミューテックスを経由せず直接書き込み (詰まっていても良いように)
-        await this.writer.write('resume\r');
-        // 軽くドレイン
+        await this._writeText('resume\r');
         await this._drainAny(500);
       } catch {}
     }
     this.connected = false;
-    try {
-      if (this.reader) {
-        await this.reader.cancel().catch(() => {});
-        this.reader.releaseLock();
-      }
-    } catch {}
-    try {
-      if (this.writer) {
-        await this.writer.close().catch(() => {});
-      }
-    } catch {}
-    try { await this.readableClosed; } catch {}
-    try { await this.writableClosed; } catch {}
-    try {
-      if (this.port) await this.port.close();
-    } catch {}
+
+    if (this.transport === 'serial') {
+      try {
+        if (this.reader) {
+          await this.reader.cancel().catch(() => {});
+          this.reader.releaseLock();
+        }
+      } catch {}
+      try {
+        if (this.writer) {
+          await this.writer.close().catch(() => {});
+        }
+      } catch {}
+      try { await this.readableClosed; } catch {}
+      try { await this.writableClosed; } catch {}
+      try {
+        if (this.port) await this.port.close();
+      } catch {}
+    } else if (this.transport === 'usb') {
+      // 読み込みループを止める
+      this._usbReadLoopActive = false;
+      // ループ中の transferIn を abort するために interface を release → close
+      try {
+        if (this._usbDevice && this._usbInterfaceNum >= 0) {
+          await this._usbDevice.releaseInterface(this._usbInterfaceNum).catch(() => {});
+        }
+      } catch {}
+      try {
+        if (this._usbDevice) await this._usbDevice.close();
+      } catch {}
+      // ループ終了を待つ (最大 1 秒)
+      try {
+        await Promise.race([
+          this._usbReadLoopPromise || Promise.resolve(),
+          new Promise(r => setTimeout(r, 1000)),
+        ]);
+      } catch {}
+    }
+
     this.port = null;
     this.reader = null;
     this.writer = null;
     this.buffer = '';
+    this.transport = null;
+    this._usbDevice = null;
+    this._usbReadBuffer = '';
+    this._usbReadWaiters = [];
+    this._usbReadLoopPromise = null;
   }
 
   // Read characters into the internal buffer until "ch> " prompt seen,
@@ -146,7 +378,7 @@ class TinySA {
       if (remaining <= 0) {
         throw new Error('タイムアウト: tinySA からの応答がありません');
       }
-      const readPromise = this.reader.read();
+      const readPromise = this._readRaw();
       const timer = new Promise((_, rej) =>
         setTimeout(() => rej(new Error('read-timeout')), remaining)
       );
@@ -160,7 +392,7 @@ class TinySA {
         throw e;
       }
       if (res.done) break;
-      this.buffer += res.value;
+      if (res.value) this.buffer += res.value;
     }
     return this.buffer;
   }
@@ -182,7 +414,7 @@ class TinySA {
     if (!this.connected) throw new Error('未接続');
     this.buffer = '';
     if (TinySA.debug) console.log('[tinySA TX]', JSON.stringify(cmd));
-    await this.writer.write(cmd + '\r');
+    await this._writeText(cmd + '\r');
     let raw;
     try {
       raw = await this._drainToPrompt(timeoutMs);
@@ -308,7 +540,7 @@ class TinySA {
     try {
       this.buffer = '';
       // ミューテックスをスキップして直接書き込み (詰まったコマンドを抜く)
-      await this.writer.write('\r\r');
+      await this._writeText('\r\r');
       // 短時間 prompt を待つ (最大 1.5 秒)
       try { await this._drainToPrompt(1500); } catch {}
       this.buffer = '';

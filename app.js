@@ -305,9 +305,14 @@
     ro.observe($('waterfallCanvas'));
 
     if (!tinysa.isSupported()) {
-      ui.connText.textContent = 'WebSerial 非対応ブラウザ';
+      ui.connText.textContent = 'WebSerial / WebUSB 非対応ブラウザ';
       ui.btnConnect.disabled = true;
-      ui.devInfo.textContent = 'Chrome / Edge / Opera で開いてください。';
+      ui.devInfo.textContent = 'Chrome / Edge / Opera (デスクトップ) または Android Chrome で開いてください。';
+    } else {
+      const hasSerial = 'serial' in navigator;
+      const hasUSB = 'usb' in navigator;
+      const apis = [hasSerial ? 'WebSerial' : null, hasUSB ? 'WebUSB' : null].filter(Boolean).join(' / ');
+      ui.devInfo.textContent = `利用可能 API: ${apis}\n「tinySA 接続」ボタンを押してください。`;
     }
 
     // 起動時デフォルト: 三沢オールセット適用 + ウォーターフォール OFF
@@ -487,7 +492,7 @@
       await tinysa.connect();
       ui.connDot.classList.remove('disconnected');
       ui.connDot.classList.add('connected');
-      ui.connText.textContent = '接続済';
+      ui.connText.textContent = '接続済 (' + tinysa.transportLabel + ')';
       ui.btnDisconnect.disabled = false;
       ui.btnStart.disabled = false;
       ui.btnRecover.disabled = false;
